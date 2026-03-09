@@ -1,0 +1,10 @@
+collection_name: agent
+persist_directory: chroma_db
+data_path: data
+sha256_hex_store: sha256.text
+allowed_file_type: ["txt","pdf"]
+chunk_size: 2000
+chunk_overlap: 150
+k: 5
+separators: ["\n\n","\n",".","!","?","。","！","？"," ","","="]
+weights: [0.5,0.5]
