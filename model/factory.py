@@ -7,7 +7,6 @@ from langchain_community.chat_models import ChatTongyi
 from langchain_community.chat_models.tongyi import BaseChatModel
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.embeddings import Embeddings
-import dashscope
 from utils.config import rag_config
 
 load_dotenv(Path(__file__).parent.parent / ".env", override=True, encoding='utf-8-sig')
@@ -34,4 +33,4 @@ chat_model = ChatModel().generator()
 embedding_model = EmbeddingsModel().generator()
 
 if __name__ == '__main__':
-    print(chat_model.invoke("你是谁"))
+    print(DASHSCOPE_API_KEY)

@@ -10,7 +10,7 @@ from utils.prompt_load import load_report_prompts, load_system_prompts
 
 
 @wrap_tool_call
-def monitor_tool(                       #工具执行监控
+async def monitor_tool(                       #工具执行监控
         #对请求的数据封装
         request: ToolCallRequest,
         #执行函数本身
@@ -20,7 +20,7 @@ def monitor_tool(                       #工具执行监控
     logger.info(f"传入参数：{request.tool_call['args']}")
 
     try:
-        result = handler(request)
+        result = await handler(request)
         logger.info(f"工具{request.tool_call['name']}调用成功")
 
         if request.tool_call['name'] =="fill_context_report":
@@ -32,19 +32,27 @@ def monitor_tool(                       #工具执行监控
         raise e
 
 @before_model
-def log_before_model(
+async def log_before_model(
         #agent的状态记录
         state: AgentState,
         #上下文执行信息
         runtime: Runtime,
 ):                 #模型执行前输出日志
     logger.info(f"即将调用模型，带有{len(state['messages'])}条消息。")
-    logger.debug(f"{type(state['messages'][-1])} | {state['messages'][-1].content.strip()}")
+    last_msg = state['messages'][-1]
+    content = last_msg.content
+    if isinstance(content, str):
+        logger.debug(f"{type(last_msg)} | {content.strip()}")
+    elif isinstance(content, list):
+        logger.debug(f"{type(last_msg)} | 多模态内容 ")
+
+
+    logger.debug(f"{type(state['messages'][-1])}")
 
     return None
 
 @dynamic_prompt
-def report_prompt_switch(requests: ModelRequest):             #提示词生成前调用函数，动态切换提示词
+async def report_prompt_switch(requests: ModelRequest):             #提示词生成前调用函数，动态切换提示词
     is_report = requests.runtime.context.get("report",False)
     if is_report:
         return load_report_prompts()
