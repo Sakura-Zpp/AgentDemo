@@ -7,4 +7,4 @@ chunk_size: 2000
 chunk_overlap: 150
 k: 5
 separators: ["\n\n","\n",".","!","?","。","！","？"," ","","="]
-weights: [0.5,0.5]
+weights: [0.7,0.3]
