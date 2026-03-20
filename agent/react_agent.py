@@ -22,7 +22,8 @@ class ReactAgent:
             self.tools = await get_all_tools()
             logger.info(f"工具加载，共有 {len(self.tools)} 个")
         except Exception as e:
-            logger.error(f"工具加载失败: {e} ,工具降级，只使用基础工具")
+            #防止调用MCP服务失败，进行工具降级
+            logger.error(f"MCP工具加载失败: {e} ,工具降级，只使用基础工具")
             self.tools = [rag_search, fill_context_report, get_weather]
             logger.info(f"基础工具加载成功，共有 {len(self.tools)} 个")
 
