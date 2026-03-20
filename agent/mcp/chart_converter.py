@@ -25,7 +25,7 @@ class ChartDataConverter:
             std_item = ChartDataConverter._build_item(x_value, y_value)
             standardized_data.append(std_item)
 
-        logger.info(f"📊 数据标准化：{len(standardized_data)} 条")
+        logger.info(f"数据标准化：{len(standardized_data)} 条")
         return standardized_data
 
     @staticmethod
@@ -56,7 +56,7 @@ class ChartDataConverter:
     @staticmethod
     def _build_item(x_value: Any, y_value: float) -> Dict[str, Any]:
         """
-        构建兼容数据项 - ⚠️ 关键：同时填充所有字段名
+        构建兼容数据项
         """
         item = {}
 

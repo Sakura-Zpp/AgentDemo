@@ -44,11 +44,11 @@ async def create_chart(
 
         # 调用工具
         chart_params = {"data": standardized_data, "title": title}
-        logger.info(f"📊 调用工具：{chart_tool.name}")
+        logger.info(f"调用工具：{chart_tool.name}")
 
         result = await chart_tool.ainvoke(chart_params)
         return result
 
     except Exception as e:
-        logger.error(f"📊 图表生成失败：{e}")
+        logger.error(f"图表生成失败：{e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
