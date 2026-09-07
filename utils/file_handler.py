@@ -1,49 +1,60 @@
-import os,hashlib
-from utils.logger_handler import logger
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
-from langchain_community.document_loaders import PyPDFLoader,TextLoader
+
+from utils.logger_handler import logger
 
 
-def get_file_SHA256_hex(filepath: str):      #获取文件sha256的64位十六进制字符串
-    if not os.path.exists(filepath):
-        logger.error(f"文件{filepath}不存在")
-        return
+def get_file_sha256_hex(filepath: str | Path) -> str | None:
+    """返回文件 SHA-256；无效路径或读取失败时返回 ``None``。"""
+    path = Path(filepath)
+    if not path.is_file():
+        logger.error("待计算摘要的路径不是有效文件")
+        return None
 
-    if not os.path.isfile(filepath):
-        logger.error(f"路径{filepath}不是文件")
-        return
-
-    sha256 = hashlib.sha256()
-    chunk_size = 4096
+    digest = hashlib.sha256()
     try:
-        with open(filepath, 'rb') as f:
-            chunk = f.read(chunk_size)
-            while chunk:
-                sha256.update(chunk)
-                chunk = f.read(chunk_size)
-            sha256 = sha256.hexdigest()
-            return sha256
-    except Exception as e:
-        logger.error(f"计算文件{filepath}sha256失败,{str(e)}")
+        with path.open("rb") as file_handle:
+            for chunk in iter(lambda: file_handle.read(64 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        logger.error("计算文件 SHA-256 失败（%s）", type(exc).__name__)
+        return None
+    return digest.hexdigest()
 
 
-def listdir_with_allowed_type(path: str,allowed_types: tuple[str]):        #返回支持的文件列表
-    if not os.path.isdir(path):
-        logger.error(f"路径 '{path}' 不是有效目录或不存在")
-        return tuple()
-
-    files = []
-    for f in os.listdir(path):
-        full_path = os.path.join(path, f)
-
-        if os.path.isfile(full_path) and f.lower().endswith(allowed_types):
-            files.append(os.path.abspath(full_path))
-
-    return tuple(files)
+def get_file_SHA256_hex(filepath: str | Path) -> str | None:
+    """兼容旧调用方；新代码应使用 :func:`get_file_sha256_hex`。"""
+    return get_file_sha256_hex(filepath)
 
 
-def pdf_load(filepath: str,passwd=None) -> list[Document]:
-    return PyPDFLoader(filepath,passwd).load()
+def listdir_with_allowed_type(
+    path: str | Path,
+    allowed_types: tuple[str, ...],
+) -> tuple[str, ...]:
+    """列出目录下允许扩展名的普通文件，结果按名称排序。"""
+    directory = Path(path)
+    if not directory.is_dir():
+        logger.error("知识库数据目录不存在或不是目录")
+        return ()
+    normalized_types = tuple(
+        suffix.lower() if suffix.startswith(".") else f".{suffix.lower()}"
+        for suffix in allowed_types
+    )
+    return tuple(
+        str(candidate.resolve())
+        for candidate in sorted(directory.iterdir(), key=lambda item: item.name.lower())
+        if candidate.is_file() and candidate.suffix.lower() in normalized_types
+    )
 
-def txt_load(filepath: str) -> list[Document]:
-    return TextLoader(filepath,encoding="utf-8").load()
+
+def pdf_load(filepath: str | Path, password: str | bytes | None = None) -> list[Document]:
+    return PyPDFLoader(str(filepath), password).load()
+
+
+def txt_load(filepath: str | Path) -> list[Document]:
+    return TextLoader(str(filepath), encoding="utf-8").load()

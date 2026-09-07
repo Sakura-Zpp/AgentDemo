@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+mcp_config.json
+.agent_data
+log
+__pycache__
+.pytest_cache
+.ruff_cache
+*.pyc
+*.pyo
+*.egg-info
+tests

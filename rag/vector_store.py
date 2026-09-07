@@ -1,148 +1,204 @@
-import os.path
-import pickle
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
 from langchain_chroma import Chroma
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
-from utils.config import chroma_config
-from utils.path_tool import get_abs_path
-from model.factory import embedding_model
+from langchain_core.retrievers import BaseRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from utils.file_handler import txt_load, pdf_load, listdir_with_allowed_type,get_file_SHA256_hex
+
+from model.factory import embedding_model
+from rag.lifecycle import mark_index_updated
+from utils.config import chroma_config
+from utils.file_handler import get_file_sha256_hex, listdir_with_allowed_type, pdf_load, txt_load
 from utils.logger_handler import logger
+from utils.path_tool import get_abs_path
 
 
 class VectorStore:
-    def __init__(self):
+    """管理 Chroma 向量索引和本地 BM25 混合检索索引。"""
+
+    def __init__(self) -> None:
         self.vectors = Chroma(
-            collection_name=chroma_config['collection_name'],
+            collection_name=str(chroma_config["collection_name"]),
             embedding_function=embedding_model,
-            persist_directory=get_abs_path(chroma_config['persist_directory']),
+            persist_directory=get_abs_path(str(chroma_config["persist_directory"])),
         )
-        self.spliter = RecursiveCharacterTextSplitter(
-            chunk_size=chroma_config['chunk_size'],
-            chunk_overlap=chroma_config['chunk_overlap'],
-            separators=chroma_config['separators'],
+        self.splitter = RecursiveCharacterTextSplitter(
+            chunk_size=int(chroma_config["chunk_size"]),
+            chunk_overlap=int(chroma_config["chunk_overlap"]),
+            separators=list(chroma_config["separators"]),
             length_function=len,
         )
+        # 兼容历史拼写，外部代码不应依赖该属性。
+        self.spliter = self.splitter
         self.bm25_documents: list[Document] = []
-
-        self.bm25_persist_path = get_abs_path(chroma_config['persist_directory']) + "/bm25_index.pkl"
-
+        persist_directory = Path(get_abs_path(str(chroma_config["persist_directory"])))
+        self.bm25_persist_path = persist_directory / "bm25_index.json"
+        self.hash_store_path = Path(get_abs_path(str(chroma_config["sha256_hex_store"])))
         self._load_bm25_index()
 
-    def _load_bm25_index(self):
-        """加载 BM25 文档列表"""
-        if os.path.exists(self.bm25_persist_path):
-            try:
-                with open(self.bm25_persist_path, 'rb') as f:
-                    self.bm25_documents = pickle.load(f)
-                logger.info(f" 加载 {len(self.bm25_documents)} 个 BM25 文档")
-            except Exception as e:
-                logger.error(f" 加载 BM25 失败：{e}")
-                self.bm25_documents = []
-        else:
-            logger.info("ℹ 未找到 BM25 文件")
-
-    def _save_bm25_index(self):
-        """保存BM25文档"""
+    def _load_bm25_index(self) -> None:
+        """从 JSON 加载 BM25 文档；首次升级时可由 Chroma 安全重建。"""
+        if not self.bm25_persist_path.exists():
+            self._rebuild_bm25_from_chroma()
+            return
         try:
-            # 确保目录存在
-            os.makedirs(os.path.dirname(self.bm25_persist_path), exist_ok=True)
-            with open(self.bm25_persist_path, 'wb') as f:
-                pickle.dump(self.bm25_documents, f)
-            logger.info(f" 已保存 {len(self.bm25_documents)} 个 BM25 文档")
-        except Exception as e:
-            logger.error(f" 保存 BM25 失败：{e}")
+            loaded: Any = json.loads(self.bm25_persist_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, list):
+                raise ValueError("BM25 索引格式无效")
+            documents: list[Document] = []
+            for item in loaded:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("page_content"), str)
+                    or not isinstance(item.get("metadata", {}), dict)
+                ):
+                    raise ValueError("BM25 索引条目格式无效")
+                documents.append(
+                    Document(
+                        page_content=item["page_content"],
+                        metadata=item.get("metadata", {}),
+                    )
+                )
+            self.bm25_documents = documents
+            logger.info("已加载 %s 个 BM25 文档", len(self.bm25_documents))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning("加载 BM25 索引失败（%s），仅使用向量检索", type(exc).__name__)
+            self.bm25_documents = []
 
-    def get_retriever(self):
-        vector_retriever = self.vectors.as_retriever(search_kwargs={"k": chroma_config['k']})
-        bm25_retriever = BM25Retriever.from_documents(documents=self.bm25_documents,k=chroma_config['k'])
-        ensemble = EnsembleRetriever(
+    def _save_bm25_index(self) -> None:
+        """以替换写入方式保存 BM25 文档，避免留下半写文件。"""
+        self.bm25_persist_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.bm25_persist_path.with_suffix(".tmp")
+        try:
+            serialized = [
+                {"page_content": document.page_content, "metadata": document.metadata}
+                for document in self.bm25_documents
+            ]
+            temporary_path.write_text(
+                json.dumps(serialized, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            temporary_path.replace(self.bm25_persist_path)
+            logger.info("已保存 %s 个 BM25 文档", len(self.bm25_documents))
+        except OSError as exc:
+            logger.error("保存 BM25 索引失败（%s）", type(exc).__name__)
+            temporary_path.unlink(missing_ok=True)
+            raise
+
+    def _rebuild_bm25_from_chroma(self) -> None:
+        """从现有向量库重建旧 Pickle 索引，不反序列化历史 Pickle 文件。"""
+        try:
+            stored = self.vectors.get(include=["documents", "metadatas"])
+            contents = stored.get("documents") or []
+            metadatas = stored.get("metadatas") or []
+            self.bm25_documents = [
+                Document(
+                    page_content=content,
+                    metadata=(
+                        metadatas[index]
+                        if index < len(metadatas) and isinstance(metadatas[index], dict)
+                        else {}
+                    ),
+                )
+                for index, content in enumerate(contents)
+                if isinstance(content, str)
+            ]
+            if self.bm25_documents:
+                self._save_bm25_index()
+                logger.info("已从 Chroma 重建 %s 个 BM25 文档", len(self.bm25_documents))
+            else:
+                logger.info("未找到可重建的 BM25 文档")
+        except Exception as exc:
+            logger.warning("从 Chroma 重建 BM25 索引失败（%s）", type(exc).__name__)
+            self.bm25_documents = []
+
+    def get_retriever(self, k: int | None = None) -> BaseRetriever:
+        result_count = int(k or chroma_config["k"])
+        vector_retriever = self.vectors.as_retriever(search_kwargs={"k": result_count})
+        if not self.bm25_documents:
+            logger.warning("BM25 索引为空，仅使用向量检索")
+            return vector_retriever
+
+        bm25_retriever = BM25Retriever.from_documents(
+            documents=self.bm25_documents,
+            k=result_count,
+        )
+        return EnsembleRetriever(
             retrievers=[vector_retriever, bm25_retriever],
-            weights=chroma_config['weights'],
+            weights=list(chroma_config["weights"]),
         )
 
-        return ensemble
+    def load_document(self) -> None:
+        """导入配置目录中的新文档，并在内容变化后更新索引版本。"""
+        index_changed = False
+        known_hashes = self._load_known_hashes()
+        allowed_file_paths = listdir_with_allowed_type(
+            get_abs_path(str(chroma_config["data_path"])),
+            tuple(str(item) for item in chroma_config["allowed_file_type"]),
+        )
+
+        for file_path in allowed_file_paths:
+            digest = get_file_sha256_hex(file_path)
+            if digest is None:
+                continue
+            if digest in known_hashes:
+                logger.info("知识库文件已存在，跳过")
+                continue
+
+            try:
+                documents = self._load_file_documents(file_path)
+                split_documents = self.splitter.split_documents(documents)
+                if not split_documents:
+                    logger.warning("知识库文件无可索引内容，跳过")
+                    continue
+
+                self.vectors.add_documents(split_documents)
+                self.bm25_documents.extend(split_documents)
+                self._save_bm25_index()
+                self._append_known_hash(digest)
+                known_hashes.add(digest)
+                index_changed = True
+                logger.info("知识库文件加载成功")
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.exception("知识库文件加载失败（%s）", type(exc).__name__)
+
+        if index_changed:
+            mark_index_updated()
+
+    def _load_known_hashes(self) -> set[str]:
+        try:
+            return {
+                line.strip()
+                for line in self.hash_store_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+        except FileNotFoundError:
+            return set()
+        except OSError as exc:
+            logger.error("读取知识库摘要清单失败（%s）", type(exc).__name__)
+            raise
+
+    def _append_known_hash(self, digest: str) -> None:
+        self.hash_store_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.hash_store_path.open("a", encoding="utf-8") as file_handle:
+            file_handle.write(f"{digest}\n")
+
+    @staticmethod
+    def _load_file_documents(file_path: str) -> list[Document]:
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".txt":
+            return txt_load(file_path)
+        if suffix == ".pdf":
+            return pdf_load(file_path)
+        raise ValueError(f"不支持的知识库文件类型：{suffix}")
 
 
-    def load_document(self):
-       """
-       从数据文件读取数据，转为向量存入数据库，
-       并对文件进行去重
-       :return:None
-       """
-
-       def check_sha256_hex(sha256_hex: str):
-           if not os.path.exists(get_abs_path(chroma_config['sha256_hex_store'])):
-               #创建文件
-               open(get_abs_path(chroma_config['sha256_hex_store']), 'w',encoding="utf-8").close()
-               return False             #文件不存在返回false
-
-           with open(get_abs_path(chroma_config['sha256_hex_store']), 'r', encoding="utf-8") as f:
-               for line in f:
-                   if line.strip() == sha256_hex:
-                       return True      #文件存在，且哈希值匹配返回ture
-
-               return False             #文件存在，但文件中没有匹配的哈希值
-
-       def save(sha256_hex: str):
-           with open(get_abs_path(chroma_config['sha256_hex_store']), 'a', encoding="utf-8") as f:
-               f.write(sha256_hex + "\n")
-
-       def get_file_doc(read_path: str):
-           if read_path.endswith(".txt"):
-               return txt_load(read_path)
-
-           if read_path.endswith(".pdf"):
-               return pdf_load(read_path)
-
-           return []
-
-       allowed_file_path:tuple[str] = listdir_with_allowed_type(
-           get_abs_path(chroma_config['data_path']),
-           tuple(chroma_config['allowed_file_type'])
-       )
-
-       for path in allowed_file_path:
-           #获取哈希值
-           SHA256_hex = get_file_SHA256_hex(path)
-
-           if check_sha256_hex(SHA256_hex):
-              logger.info(f"加载知识库{path}已存在,跳过")
-              continue
-
-           try:
-               documents: list[Document] = get_file_doc(path)
-
-               if not documents:
-                   logger.error(f"{path}没有内容，跳过")
-                   continue
-
-               split_doc = self.spliter.split_documents(documents)
-
-               if not split_doc:
-                   logger.error(f"{path}没有内容，跳过")
-                   continue
-
-               #将内容存入数据库
-               self.vectors.add_documents(split_doc)
-               self.bm25_documents.extend(split_doc)
-               self._save_bm25_index()
-               #记录已处理文件哈希值，避免重复
-               save(SHA256_hex)
-
-               logger.info(f"{path},内容加载成功")
-           except Exception as e:
-               #exc_info为true会记录详细报错
-               logger.error(f"{path}数据库加载失败：{str(e)}",exc_info=True)
-
-if __name__ == '__main__':
-    vs = VectorStore()
-    vs.load_document()
-    retrieve = vs.get_retriever()
-    res = retrieve.invoke("公司理念与行为总则第五条是什么，并且将公司每个季度的财报进行总结")
-    for doc in res:
-        print(doc.page_content)
-        print("="*20)
-
+if __name__ == "__main__":
+    vector_store = VectorStore()
+    vector_store.load_document()

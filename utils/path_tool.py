@@ -1,31 +1,16 @@
-"""
-为项目提供统一的绝对路径
-"""
-import os
+"""为项目提供统一、可测试的绝对路径。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
 
 def get_project_root() -> str:
-    """
-    获取工程所在根目录
-    :return:字符串根目录
-    """
-    #当前文件的绝对路径
-    current_file = os.path.abspath(__file__)
-    #获取工程根目录，先获取文件所在文件夹绝对路径
-    current_dir = os.path.dirname(current_file)
-    #获取工程根目录
-    project_root = os.path.dirname(current_dir)
-
-    return project_root
+    """返回工程根目录。"""
+    return str(Path(__file__).resolve().parent.parent)
 
 
-def get_abs_path(relative_path: str) -> str:
-    """
-    传递相对路径，获得绝对路径
-    :param relative_path:相对路径
-    :return:绝对路径
-    """
-    project_root = get_project_root()
-    return os.path.join(project_root, relative_path)
-
-if __name__ == '__main__':
-    print(get_abs_path("mcp_config.json"))
+def get_abs_path(relative_path: str | Path) -> str:
+    """将工程内相对路径转换为绝对路径；绝对路径保持不变。"""
+    path = Path(relative_path)
+    return str(path if path.is_absolute() else Path(get_project_root()) / path)

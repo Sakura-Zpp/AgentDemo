@@ -1,2 +1,6 @@
 chat_model_name: qwen-plus
 embedding_model_name: text-embedding-v4
+rerank_enabled: true
+rerank_model_name: gte-rerank
+rerank_candidate_k: 12
+rerank_top_n: 5

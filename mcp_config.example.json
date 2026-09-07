@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "amap-maps": {
+      "type": "streamableHttp",
+      "description": "阿里云百炼 Amap Maps 高德地图",
+      "baseUrl": "https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DASHSCOPE_API_KEY}"
+      }
+    },
+    "antv-visualization-chart": {
+      "type": "sse",
+      "description": "基于 AntV 的可视化图表 MCP 服务",
+      "baseUrl": "https://dashscope.aliyuncs.com/api/v1/mcps/antv-visualization-chart/sse",
+      "headers": {
+        "Authorization": "Bearer ${DASHSCOPE_API_KEY}"
+      }
+    }
+  }
+}

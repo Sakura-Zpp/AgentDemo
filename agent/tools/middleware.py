@@ -1,59 +1,69 @@
-from typing import Callable
-from langchain.agents import AgentState
-from langchain.agents.middleware import wrap_tool_call, before_model, dynamic_prompt, ModelRequest
+from collections.abc import Callable
+
+from langchain.agents.middleware import (
+    ModelRequest,
+    before_model,
+    dynamic_prompt,
+    wrap_tool_call,
+)
+from langchain.agents.middleware.types import AgentState
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
+
 from utils.logger_handler import logger
+from utils.observability import metrics, timed_metric
 from utils.prompt_load import load_report_prompts, load_system_prompts
 
 
 @wrap_tool_call
-async def monitor_tool(                       #工具执行监控
-        #对请求的数据封装
-        request: ToolCallRequest,
-        #执行函数本身
-        handler: Callable[[ToolCallRequest], ToolMessage | Command],
-) -> ToolMessage | Command :
-    logger.info(f"执行工具：{request.tool_call['name']}")
-    logger.info(f"传入参数：{request.tool_call['args']}")
+async def monitor_tool(
+    request: ToolCallRequest,
+    handler: Callable[[ToolCallRequest], ToolMessage | Command],
+) -> ToolMessage | Command:
+    tool_name = request.tool_call["name"]
+    arguments = request.tool_call.get("args", {})
+    argument_fields = sorted(arguments) if isinstance(arguments, dict) else ["<非结构化>"]
+    logger.info("执行工具：%s，参数字段：%s", tool_name, argument_fields)
 
+    metrics.increment("tools.total")
     try:
-        result = await handler(request)
-        logger.info(f"工具{request.tool_call['name']}调用成功")
+        with timed_metric(f"tools.{tool_name}.latency"):
+            result = await handler(request)
+        metrics.increment("tools.success")
+        metrics.increment(f"tools.{tool_name}.success")
+        logger.info("工具 %s 调用成功", tool_name)
 
-        if request.tool_call['name'] =="fill_context_report":
+        if tool_name == "fill_context_report":
             request.runtime.context["report"] = True
 
         return result
-    except Exception as e:
-        logger.error(f"工具{request.tool_call['name']}调用失败，原因{str(e)}")
-        raise e
+    except Exception as exc:
+        metrics.increment("tools.error")
+        metrics.increment(f"tools.{tool_name}.error")
+        logger.exception("工具 %s 调用失败（%s）", tool_name, type(exc).__name__)
+        raise
+
 
 @before_model
 async def log_before_model(
-        #agent的状态记录
-        state: AgentState,
-        #上下文执行信息
-        runtime: Runtime,
-):                 #模型执行前输出日志
-    logger.info(f"即将调用模型，带有{len(state['messages'])}条消息。")
-    last_msg = state['messages'][-1]
-    content = last_msg.content
-    if isinstance(content, str):
-        logger.debug(f"{type(last_msg)} | {content.strip()}")
-    elif isinstance(content, list):
-        logger.debug(f"{type(last_msg)} | 多模态内容 ")
-
-
-    logger.debug(f"{type(state['messages'][-1])}")
-
+    state: AgentState,
+    runtime: Runtime,
+) -> None:
+    del runtime
+    last_message_type = type(state["messages"][-1]).__name__ if state["messages"] else "None"
+    logger.info(
+        "即将调用模型，消息数：%s，末条消息类型：%s",
+        len(state["messages"]),
+        last_message_type,
+    )
     return None
 
+
 @dynamic_prompt
-async def report_prompt_switch(requests: ModelRequest):             #提示词生成前调用函数，动态切换提示词
-    is_report = requests.runtime.context.get("report",False)
+async def report_prompt_switch(requests: ModelRequest) -> str:
+    is_report = requests.runtime.context.get("report", False)
     if is_report:
         return load_report_prompts()
 

@@ -1,5 +1,9 @@
 # Python
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.py[cod]
 *.so
 .Python
@@ -19,6 +23,14 @@ wheels/
 .installed.cfg
 *.egg
 mcp_config.json
+.agent_data/
+log/
+.tmp-p1-deps*/
+chroma_db/.index_revision
+chroma_db/bm25_index.json
+chroma_db/bm25_index.tmp
+chroma_db/**/__init__.py
+work/
 # Env
 .env
 .env.local

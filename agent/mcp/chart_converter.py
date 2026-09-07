@@ -1,72 +1,81 @@
-from typing import List, Dict, Any
-from utils.logger_handler import logger
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from agent.mcp.chart_config import CHART_CONFIGS
+from utils.logger_handler import logger
+
+
+class ChartDataError(ValueError):
+    """图表输入无法安全转换时抛出的校验错误。"""
+
 
 class ChartDataConverter:
-    """基础图表数据转换器"""
+    """将常见字段名转换为图表 MCP 接受的统一格式。"""
 
     @staticmethod
-    def normalize_data(data: List[Dict[str, Any]], chart_type: str) -> List[Dict[str, Any]]:
-        """标准化数据格式"""
-        if not data or not isinstance(data, list):
-            return []
+    def normalize_data(
+        data: Sequence[Mapping[str, Any]],
+        chart_type: str,
+    ) -> list[dict[str, Any]]:
+        """标准化数据；拒绝未知图表类型和可能造成数据失真的输入。"""
+        normalized_type = chart_type.strip().lower()
+        if normalized_type not in CHART_CONFIGS:
+            supported = "、".join(sorted(CHART_CONFIGS))
+            raise ChartDataError(f"不支持的图表类型：{chart_type}；支持：{supported}")
+        if not data:
+            raise ChartDataError("图表数据不能为空")
 
-        config = CHART_CONFIGS.get(chart_type.lower(), CHART_CONFIGS["column"])
-        standardized_data = []
-
-        for item in data:
-            # 查找 X 轴字段
+        config = CHART_CONFIGS[normalized_type]
+        standardized_data: list[dict[str, Any]] = []
+        for row_number, item in enumerate(data, start=1):
+            if not isinstance(item, Mapping):
+                raise ChartDataError(f"第 {row_number} 行必须是对象")
             x_value = ChartDataConverter._find_field(item, config["x_fields"])
-
-            # 查找 Y 轴字段（确保是数字）
             y_value = ChartDataConverter._find_numeric(item, config["y_fields"])
+            if x_value is None:
+                raise ChartDataError(f"第 {row_number} 行缺少横轴字段")
+            if y_value is None:
+                raise ChartDataError(f"第 {row_number} 行缺少有效数值字段")
+            standardized_data.append(ChartDataConverter._build_item(x_value, y_value))
 
-            # 构建兼容数据（同时填充所有可能的字段名）
-            std_item = ChartDataConverter._build_item(x_value, y_value)
-            standardized_data.append(std_item)
-
-        logger.info(f"数据标准化：{len(standardized_data)} 条")
+        logger.info("数据标准化完成：%s 条", len(standardized_data))
         return standardized_data
 
     @staticmethod
-    def _find_field(item: Dict, field_names: List[str]) -> Any:
-        """查找字段值"""
+    def _find_field(item: Mapping[str, Any], field_names: Sequence[str]) -> Any | None:
+        """按优先级查找横轴字段，保留 0 和 False 等合法值。"""
         for field in field_names:
-            if field in item:
+            if field in item and item[field] is not None:
                 return item[field]
-        return str(list(item.values())[0]) if item else ""
+        return None
 
     @staticmethod
-    def _find_numeric(item: Dict, field_names: List[str]) -> float:
-        """查找数值字段"""
+    def _find_numeric(
+        item: Mapping[str, Any],
+        field_names: Sequence[str],
+    ) -> float | None:
+        """只从声明的纵轴候选字段中读取有限数值。"""
         for field in field_names:
-            if field in item:
-                try:
-                    return float(item[field])
-                except (ValueError, TypeError):
-                    pass
-        #  fallback：找第一个能转数字的值
-        for v in item.values():
+            if field not in item:
+                continue
             try:
-                return float(v)
-            except:
-                pass
-        return 0.0
+                value = float(item[field])
+            except (TypeError, ValueError):
+                continue
+            if value == float("inf") or value == float("-inf") or value != value:
+                continue
+            return value
+        return None
 
     @staticmethod
-    def _build_item(x_value: Any, y_value: float) -> Dict[str, Any]:
-        """
-        构建兼容数据项
-        """
-        item = {}
-
-        # X 轴字段（全部填充）
-        x_str = str(x_value) if x_value else ""
-        for field in ["category", "time", "text", "x", "name", "year", "date", "month"]:
-            item[field] = x_str
-
-        # Y 轴字段（全部填充）
-        for field in ["value", "y", "amount", "count", "num", "revenue", "profit"]:
+    def _build_item(x_value: Any, y_value: float) -> dict[str, Any]:
+        """构建兼容不同图表 MCP 参数命名的数据项。"""
+        item: dict[str, Any] = {}
+        x_text = str(x_value)
+        for field in ("category", "time", "text", "x", "name", "year", "date", "month"):
+            item[field] = x_text
+        for field in ("value", "y", "amount", "count", "num", "revenue", "profit"):
             item[field] = y_value
-
         return item
